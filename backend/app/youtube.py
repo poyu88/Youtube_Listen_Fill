@@ -9,6 +9,7 @@ from typing import Any
 from yt_dlp import YoutubeDL
 
 from .srt import parse_srt
+from .vtt import parse_vtt
 
 
 class YoutubeImportError(Exception):
@@ -27,11 +28,30 @@ def _pick_english_sub_key(subtitles: dict[str, Any]) -> str | None:
     return None
 
 
+def _prefer_subtitle_file(candidates: list[Path], ext: str) -> Path | None:
+    """從候選檔中挑選較佳的英文字幕檔。"""
+    if not candidates:
+        return None
+    preferred = [
+        p
+        for p in candidates
+        if p.name.lower().endswith(f".en.{ext}") or f".en.{ext}" in p.name.lower()
+    ]
+    # 避開 en-orig 以外、優先純 .en.
+    pure_en = [p for p in preferred if ".en-orig." not in p.name.lower()]
+    if pure_en:
+        return pure_en[0]
+    if preferred:
+        return preferred[0]
+    return candidates[0]
+
+
 def fetch_video_with_subs(url: str) -> dict[str, Any]:
     """
     依 URL 取得影片資訊與英文字幕，並解析成分段。
 
-    優先使用人工字幕，其次自動字幕。不下載影片本體。
+    優先下載 VTT（保留 YouTube 自動字幕逐字時間），其次 SRT。
+    不下載影片本體。
     """
     with tempfile.TemporaryDirectory(prefix="ylf_subs_") as tmp:
         outtmpl = str(Path(tmp) / "%(id)s")
@@ -40,7 +60,8 @@ def fetch_video_with_subs(url: str) -> dict[str, Any]:
             "writesubtitles": True,
             "writeautomaticsub": True,
             "subtitleslangs": ["en", "en-US", "en-GB"],
-            "subtitlesformat": "srt",
+            # 優先 VTT，才能利用 karaoke 逐字時間重建不重疊分段
+            "subtitlesformat": "vtt",
             "outtmpl": outtmpl,
             "quiet": True,
             "no_warnings": True,
@@ -59,26 +80,25 @@ def fetch_video_with_subs(url: str) -> dict[str, Any]:
         if not video_id:
             raise YoutubeImportError("缺少影片 ID")
 
-        # yt-dlp 可能寫出 .en.srt / .en-US.srt 等
-        srt_path: Path | None = None
-        candidates = sorted(Path(tmp).glob(f"{video_id}*.srt"))
-        if candidates:
-            # 優先檔名含純 .en.
-            preferred = [p for p in candidates if ".en." in p.name.lower()]
-            srt_path = preferred[0] if preferred else candidates[0]
+        vtt_candidates = sorted(Path(tmp).glob(f"{video_id}*.vtt"))
+        srt_candidates = sorted(Path(tmp).glob(f"{video_id}*.srt"))
+        vtt_path = _prefer_subtitle_file(vtt_candidates, "vtt")
+        srt_path = _prefer_subtitle_file(srt_candidates, "srt")
 
-        srt_content = ""
-        if srt_path and srt_path.exists():
+        segments: list[dict[str, Any]] = []
+        if vtt_path and vtt_path.exists():
+            vtt_content = vtt_path.read_text(encoding="utf-8", errors="replace")
+            segments = parse_vtt(vtt_content)
+        elif srt_path and srt_path.exists():
             srt_content = srt_path.read_text(encoding="utf-8", errors="replace")
+            segments = parse_srt(srt_content)
         else:
-            # 後備：從 info 中確認是否有英文軌
             manual = info.get("subtitles") or {}
             auto = info.get("automatic_captions") or {}
             if not _pick_english_sub_key(manual) and not _pick_english_sub_key(auto):
                 raise YoutubeImportError("此影片沒有可用的英文字幕")
-            raise YoutubeImportError("已偵測到英文字幕但無法下載 SRT 檔")
+            raise YoutubeImportError("已偵測到英文字幕但無法下載字幕檔")
 
-        segments = parse_srt(srt_content)
         if not segments:
             raise YoutubeImportError("英文字幕解析後沒有可用分段")
 
