@@ -6,6 +6,8 @@ node_modules/
 frontend/dist/
 data/*.json
 !.gitkeep
+backend/tmp_subs/
+tmp_subs/
 .DS_Store
 *.log
 .env
