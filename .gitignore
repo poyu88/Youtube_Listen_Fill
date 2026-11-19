@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+backend/.venv/
+node_modules/
+frontend/dist/
+data/*.json
+!.gitkeep
+.DS_Store
+*.log
+.env
+.env.*
